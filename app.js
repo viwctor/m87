@@ -22,24 +22,59 @@
    ============================================================ */
 
 const STORE_KEY = "m87.data";
-const APP_VERSION = "1.3";
+const APP_VERSION = "0.8 (beta)";
+
+/* id único deste aparelho (para ignorar o eco das próprias escritas no tempo real) */
+const DEVICE_ID = (() => {
+  let id = localStorage.getItem("m87.device");
+  if (!id) { id = "d_" + Math.random().toString(36).slice(2, 10); localStorage.setItem("m87.device", id); }
+  return id;
+})();
+
+/* Paleta de cores (gradientes) das matérias */
+const PALETTE = [
+  "linear-gradient(135deg, #ff8a1e, #ffd23f)",
+  "linear-gradient(135deg, #ff4e50, #ff8a1e)",
+  "linear-gradient(135deg, #ffd23f, #ff7a18)",
+  "linear-gradient(135deg, #ff5e7e, #ff4e50)",
+  "linear-gradient(135deg, #25d0a4, #1fb6ff)",
+  "linear-gradient(135deg, #5ee7a0, #25d0a4)",
+  "linear-gradient(135deg, #b06bff, #ff5e7e)",
+  "linear-gradient(135deg, #ffb347, #e8552d)",
+];
 
 /* Horários possíveis, em ordem cronológica */
 const SLOT_DEFS = [
-  { id: "m1", time: "08:00 – 09:40", short: "08h",   label: "1ª aula · manhã", shift: "Manhã" },
-  { id: "m2", time: "10:00 – 11:40", short: "10h",   label: "2ª aula · manhã", shift: "Manhã" },
-  { id: "n1", time: "19:00 – 20:40", short: "19h",   label: "1ª aula · noite", shift: "Noite" },
-  { id: "n2", time: "20:50 – 22:30", short: "20h50", label: "2ª aula · noite", shift: "Noite" },
+  { id: "m1", time: "08:00 – 09:40", short: "08h",   start: "08:00", label: "1ª aula", shift: "Manhã" },
+  { id: "m2", time: "10:00 – 11:40", short: "10h",   start: "10:00", label: "2ª aula", shift: "Manhã" },
+  { id: "mi", time: "08:00 – 12:00", short: "08h",   start: "08:00", label: "Integral", shift: "Manhã" },
+  { id: "t1", time: "13:00 – 14:40", short: "13h",   start: "13:00", label: "1ª aula", shift: "Tarde" },
+  { id: "t2", time: "15:00 – 16:40", short: "15h",   start: "15:00", label: "2ª aula", shift: "Tarde" },
+  { id: "ti", time: "13:00 – 17:00", short: "13h",   start: "13:00", label: "Integral", shift: "Tarde" },
+  { id: "n1", time: "19:00 – 20:40", short: "19h",   start: "19:00", label: "1ª aula", shift: "Noite" },
+  { id: "n2", time: "20:50 – 22:30", short: "20h50", start: "20:50", label: "2ª aula", shift: "Noite" },
 ];
 const SLOT_BY_ID = Object.fromEntries(SLOT_DEFS.map(s => [s.id, s]));
 const SLOT_ORDER = SLOT_DEFS.map(s => s.id);
+
+/* resolve um slot, seja preset ou personalizado ("c:HH:MM-HH:MM") */
+function slotInfo(id) {
+  if (SLOT_BY_ID[id]) return SLOT_BY_ID[id];
+  if (typeof id === "string" && id.startsWith("c:")) {
+    const [a, b] = id.slice(2).split("-");
+    const h = parseInt(a, 10) || 0;
+    const shift = h < 12 ? "Manhã" : h < 18 ? "Tarde" : "Noite";
+    return { id, time: `${a} – ${b}`, short: a, start: a, label: "Personalizado", shift };
+  }
+  return { id, time: id, short: id, start: "99:99", label: String(id), shift: "" };
+}
 
 const WEEKDAYS = ["", "Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"];
 const WD_SHORT = ["", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
 
 /* ---------- Dados iniciais: grade 2026.1 (noite) ---------- */
 function seedData() {
-  return {
+  const d = {
     version: 2,
     activeSemester: "2026.1",
     semesters: {
@@ -79,12 +114,23 @@ function seedData() {
     marks: { "2026.1": {}, "2026.2": {} },
     notes: { "2026.1": {}, "2026.2": {} },
   };
+  Object.values(d.semesters).forEach(sem =>
+    sem.subjects.forEach((s, i) => { s.color = PALETTE[i % PALETTE.length]; }));
+  return d;
+}
+
+/* estado vazio (novo usuário escolhe o semestre) */
+function emptyData() {
+  return { version: 2, activeSemester: null, semesters: {}, occ: {}, marks: {}, notes: {}, lastCustomTime: "" };
 }
 
 /* ---------- Estado ---------- */
 let data = loadData();
 let calRef = null;
 let lastSwipe = 0;
+let autoSwitched = false; // calendário trocou de semestre automaticamente ao navegar
+let activeView = "dashboard";
+let _dataVer = 0;         // contador para invalidar o cache da grade de horários
 
 function loadData() {
   try {
@@ -127,8 +173,20 @@ function migrate(d) {
   return d;
 }
 
+let cloudUserId = null;       // id do usuário logado (null = modo local)
+let cloudUsername = "";
+let cloudEmail = "";
+let cloudSaveTimer = null;
 function saveData() {
+  _dataVer++;
   localStorage.setItem(STORE_KEY, JSON.stringify(data));
+  if (cloudUserId) {
+    clearTimeout(cloudSaveTimer);
+    cloudSaveTimer = setTimeout(() => {
+      data._device = DEVICE_ID; // marca a origem para o tempo real ignorar o eco
+      M87Cloud.saveData(cloudUserId, data).catch(e => console.error("Falha ao salvar na nuvem:", e));
+    }, 800);
+  }
 }
 
 /* ---------- Helpers ---------- */
@@ -144,22 +202,27 @@ function maxFor(subject) { return subject.credits === 4 ? 8 : 4; }
 function fmtDate(y, m, d) { return `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`; }
 function parseDate(str) { const [y, m, d] = str.split("-").map(Number); return new Date(y, m - 1, d); }
 function isoWeekday(dateObj) { const wd = dateObj.getDay(); return wd === 0 ? 7 : wd; }
-function isValidDate(s) { return /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(parseDate(s).getTime()); }
 
 /* mapa weekday -> { slotId: subject } */
+let _ttCache = null, _ttVer = -1, _ttSem = null;
 function buildTimetable() {
+  if (_ttCache && _ttVer === _dataVer && _ttSem === data.activeSemester) return _ttCache;
   const tt = {};
-  for (const s of activeSem().subjects) {
+  for (const s of (activeSem()?.subjects || [])) {
     for (const m of (s.meetings || [])) {
       (tt[m.weekday] ||= {})[m.slot] = s;
     }
   }
+  _ttCache = tt; _ttVer = _dataVer; _ttSem = data.activeSemester;
   return tt;
 }
-/* slots de um dia da semana, em ordem cronológica */
+/* slots de um dia da semana, em ordem cronológica (inclui horários personalizados) */
 function slotsForWeekday(wd) {
   const day = buildTimetable()[wd] || {};
-  return SLOT_ORDER.filter(id => day[id]).map(id => ({ id, subj: day[id] }));
+  return Object.keys(day)
+    .map(id => ({ id, subj: day[id], start: slotInfo(id).start }))
+    .sort((a, b) => a.start.localeCompare(b.start))
+    .map(({ id, subj }) => ({ id, subj }));
 }
 function subjectAt(weekday, slotId) {
   const tt = buildTimetable();
@@ -172,7 +235,7 @@ function countAbsences(subjectId) {
   for (const [date, slots] of Object.entries(occ)) {
     if (marks[date]) continue;
     const wd = isoWeekday(parseDate(date));
-    for (const slotId of SLOT_ORDER) {
+    for (const slotId of Object.keys(slots)) {
       if (slots[slotId] === "falta") {
         const subj = subjectAt(wd, slotId);
         if (subj && subj.id === subjectId) count++;
@@ -184,7 +247,7 @@ function countAbsences(subjectId) {
 
 function meetingsText(s) {
   return (s.meetings || []).length
-    ? s.meetings.map(m => `${WD_SHORT[m.weekday]} ${SLOT_BY_ID[m.slot]?.short || "?"}`).join(" · ")
+    ? s.meetings.map(m => `${WD_SHORT[m.weekday]} ${slotInfo(m.slot).short}`).join(" · ")
     : "sem horário definido";
 }
 
@@ -198,11 +261,54 @@ function esc(str = "") {
   return str.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 }
 
+function copyText(t) {
+  if (!t) return;
+  const done = () => toast("E-mail copiado ✓");
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(t).then(done).catch(() => toast(t));
+  } else {
+    const ta = document.createElement("textarea");
+    ta.value = t; document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); done(); } catch { toast(t); }
+    ta.remove();
+  }
+}
+
+/* notificação quando uma matéria fica com só 1 falta de margem */
+const _notified = new Set();
+function notify(title, body) {
+  if (!("Notification" in window)) return;
+  if (Notification.permission === "granted") {
+    try { new Notification(title, { body, icon: "./icons/icon-192.png" }); } catch {}
+  } else if (Notification.permission === "default") {
+    Notification.requestPermission().catch(() => {});
+  }
+}
+function maybeNotifyLimit() {
+  const sem = activeSem();
+  if (!sem) return;
+  for (const s of sem.subjects) {
+    const remaining = maxFor(s) - countAbsences(s.id);
+    const key = data.activeSemester + ":" + s.id;
+    if (remaining === 1) {
+      if (!_notified.has(key)) { _notified.add(key); notify("Só pode faltar mais 1 dia", s.name); }
+    } else {
+      _notified.delete(key);
+    }
+  }
+}
+
 /* ============================================================
    DASHBOARD
    ============================================================ */
 function renderDashboard() {
   const sem = activeSem();
+  if (!sem) {
+    $("#semesterBanner").textContent = "";
+    $("#dashboardGrid").innerHTML = `<div class="empty-state"><div class="big">🕳️</div>Nenhum semestre ainda.<br/>Toque no seletor de semestre (no topo) para criar um.</div>`;
+    $("#semesterSummary").innerHTML = "";
+    return;
+  }
   $("#semesterBanner").textContent = `${sem.label} · ${sem.subjects.length} matéria(s)`;
 
   const grid = $("#dashboardGrid");
@@ -232,9 +338,9 @@ function renderDashboard() {
     const numColor = level === "safe" ? "var(--text)" : `var(--${level})`;
 
     let alertHtml = "";
-    if (remaining === 1) alertHtml = `<div class="sc-alert a-danger">⚠️ Véspera do limite — só pode faltar mais 1</div>`;
-    else if (remaining === 0) alertHtml = `<div class="sc-alert a-critical">🚫 Limite de faltas atingido</div>`;
-    else if (remaining < 0) alertHtml = `<div class="sc-alert a-critical">🚫 Limite ultrapassado em ${-remaining}</div>`;
+    if (remaining === 1) alertHtml = `<div class="sc-alert a-warn">Só pode faltar mais 1</div>`;
+    else if (remaining === 0) alertHtml = `<div class="sc-alert a-critical">Limite de faltas atingido</div>`;
+    else if (remaining < 0) alertHtml = `<div class="sc-alert a-critical">Limite ultrapassado em ${-remaining}</div>`;
 
     const card = document.createElement("div");
     card.className = "subject-card";
@@ -243,7 +349,7 @@ function renderDashboard() {
       <div class="sc-top">
         <div>
           <div class="sc-name">${esc(s.name)}</div>
-          <div class="sc-meta">${s.code ? esc(s.code) + " · " : ""}${meetingsText(s)}</div>
+          <div class="sc-meta">${meetingsText(s)}</div>
         </div>
         <div class="sc-count">
           <span class="label">Faltas</span>
@@ -282,10 +388,10 @@ function renderSummary() {
   const wrap = $("#semesterSummary");
   if (!sem.subjects.length) { wrap.innerHTML = ""; return; }
 
-  let usedTotal = 0, maxTotal = 0;
+  let usedTotal = 0, maxTotal = 0, creditsTotal = 0;
   const rows = sem.subjects.map(s => {
     const used = countAbsences(s.id), max = maxFor(s);
-    usedTotal += used; maxTotal += max;
+    usedTotal += used; maxTotal += max; creditsTotal += (Number(s.credits) || 0);
     return { s, rest: remainingSessions(s) };
   });
 
@@ -300,7 +406,7 @@ function renderSummary() {
     <div class="summary-card">
       <div class="summary-head">
         <h3>Resumo do semestre</h3>
-        <span class="muted small">${usedTotal}/${maxTotal} faltas no total</span>
+        <span class="muted small">${creditsTotal} créditos · ${usedTotal}/${maxTotal} faltas</span>
       </div>
       <div class="sum-subtitle muted small">Aulas restantes por matéria</div>
       ${list}
@@ -319,9 +425,10 @@ function initCalRef() {
 }
 
 function renderCalendar() {
+  const sem = activeSem();
+  if (!sem) { $("#calGrid").innerHTML = ""; $("#calTitle").textContent = "—"; return; }
   if (!calRef) initCalRef();
   const { year, month } = calRef;
-  const sem = activeSem();
   const occ = semOcc(), marks = semMarks(), notes = semNotes();
 
   const calLabel = new Date(year, month, 1).toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
@@ -362,11 +469,11 @@ function renderCalendar() {
     if (!mark && hasClass) {
       const slotsWrap = document.createElement("div");
       slotsWrap.className = "cal-slots";
-      for (const { id, subj } of slots) {
+      for (const { id } of slots) {
         const seg = document.createElement("div");
         seg.className = "cal-slot";
         const st = occ[dateStr] && occ[dateStr][id];
-        if (st === "falta") { seg.classList.add("s-falta"); seg.style.background = subj.color; }
+        if (st === "falta") seg.classList.add("s-falta");
         else if (st === "prof") seg.classList.add("s-prof");
         slotsWrap.appendChild(seg);
       }
@@ -391,11 +498,49 @@ function renderCalendar() {
   }
 }
 
+/* semestre que contém hoje (ou o ativo, se nenhum) */
+function currentSemesterKey() {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  for (const [key, sem] of Object.entries(data.semesters)) {
+    if (today >= parseDate(sem.start) && today <= parseDate(sem.end)) return key;
+  }
+  return data.activeSemester || Object.keys(data.semesters)[0];
+}
+
+/* semestre cujo período cruza o mês exibido (null se nenhum) */
+function semesterForMonth(year, month) {
+  const mStart = new Date(year, month, 1), mEnd = new Date(year, month + 1, 0);
+  for (const [key, sem] of Object.entries(data.semesters)) {
+    if (parseDate(sem.start) <= mEnd && parseDate(sem.end) >= mStart) return key;
+  }
+  return null;
+}
+
 function calShift(delta) {
   let m = calRef.month + delta, y = calRef.year;
   if (m < 0) { m = 11; y--; }
   if (m > 11) { m = 0; y++; }
   calRef = { year: y, month: m };
+  // troca automaticamente de semestre se o mês pertencer a outro
+  const semKey = semesterForMonth(y, m);
+  if (semKey && semKey !== data.activeSemester) {
+    data.activeSemester = semKey;
+    autoSwitched = true;
+    updateSemesterButton();
+    renderDashboard();
+    toast("Mudou para " + data.semesters[semKey].label);
+  }
+  renderCalendar();
+}
+
+/* volta para o mês/semestre de hoje */
+function goToday() {
+  data.activeSemester = currentSemesterKey();
+  autoSwitched = false;
+  updateSemesterButton();
+  const t = new Date();
+  calRef = { year: t.getFullYear(), month: t.getMonth() };
+  renderDashboard();
   renderCalendar();
 }
 
@@ -429,7 +574,7 @@ function buildDayModalBody(dateStr) {
   } else {
     let lastShift = null;
     for (const { id, subj } of slots) {
-      const def = SLOT_BY_ID[id];
+      const def = slotInfo(id);
       if (def.shift !== lastShift) {
         const h = document.createElement("div");
         h.className = "slot-shift muted small";
@@ -505,6 +650,7 @@ function saveDayModal() {
   saveData();
   closeModals();
   renderAll();
+  maybeNotifyLimit();
   toast("Salvo ✓");
   showBackupReminder();
 }
@@ -522,18 +668,89 @@ function clearDay() {
 }
 
 /* ============================================================
-   GERENCIAR
+   GUIA MATÉRIAS + CONFIG
    ============================================================ */
-function renderSettings() {
-  $("#settingsSemLabel").textContent = "· " + activeSem().label;
+function renderSubjectsTab() {
+  const sem = activeSem();
+  $("#subjectsBanner").textContent = sem ? sem.label : "Nenhum semestre — crie um no topo";
+  renderSubjectsByDay();
   renderSubjectList();
   renderSemesterList();
+}
+
+/* informações das matérias agrupadas por dia da semana (seg–sex) */
+function renderSubjectsByDay() {
+  const wrap = $("#subjectsByDay");
+  wrap.innerHTML = "";
+  let any = false;
+  for (let wd = 1; wd <= 5; wd++) {
+    const slots = slotsForWeekday(wd);
+    if (!slots.length) continue;
+    any = true;
+    const block = document.createElement("div");
+    block.className = "day-block";
+    block.innerHTML = `<h3 class="day-title">${WEEKDAYS[wd]}</h3>`;
+    for (const { id, subj } of slots) {
+      const def = slotInfo(id);
+      const meeting = (subj.meetings || []).find(m => m.weekday === wd && m.slot === id);
+      const room = meeting && meeting.room ? meeting.room : "";
+      const card = document.createElement("div");
+      card.className = "matter-card";
+      card.style.setProperty("--card-accent", subj.color);
+      card.innerHTML = `
+        <div class="mc-top">
+          <span class="mc-name">${esc(subj.name)}</span>
+          ${room ? `<span class="mc-room">${esc(room)}</span>` : ""}
+        </div>
+        <div class="mc-line">${def.time}</div>
+        ${(subj.prof || subj.profEmail) ? `<div class="mc-prof">
+          ${subj.prof ? `<span>${esc(subj.prof)}</span>` : ""}
+          ${subj.profEmail ? `<span class="mc-email" data-email="${esc(subj.profEmail)}" role="button" title="Copiar e-mail">${esc(subj.profEmail)}</span>` : ""}
+        </div>` : ""}`;
+      block.appendChild(card);
+    }
+    wrap.appendChild(block);
+  }
+  if (!any) wrap.innerHTML = `<p class="muted small" style="padding:4px 2px 14px">Nenhuma matéria com horário cadastrado neste semestre. Adicione abaixo.</p>`;
+}
+
+/* Config / conta */
+function renderSettings() { renderAccount(); }
+
+function renderAccount() {
+  const card = $("#accountCard");
+  if (!card) return;
+  if (cloudUserId) {
+    card.hidden = false;
+    const initial = (cloudUsername || "U").charAt(0).toUpperCase();
+    $("#accountAvatar").textContent = initial;
+    $("#accountName").textContent = cloudUsername || "Conta";
+    $("#accountAvatarLg").textContent = initial;
+    $("#accountNameLg").textContent = cloudUsername || "Conta";
+    $("#accountEmail").textContent = cloudEmail || "";
+  } else {
+    card.hidden = true; // modo local não tem conta
+  }
+}
+
+function openAccountModal() { showModal("#accountModal"); }
+
+async function deleteAccount() {
+  const ok = await uiConfirm("Excluir a conta apaga TODOS os seus dados da nuvem. Não pode ser desfeito.", { danger: true, yesLabel: "Excluir conta" });
+  if (!ok) return;
+  try { if (cloudUserId) await M87Cloud.deleteData(cloudUserId); } catch (e) { console.error(e); }
+  try { await M87Cloud.signOut(); } catch (e) { console.error(e); }
+  cloudUserId = null;
+  data = emptyData();
+  localStorage.setItem(STORE_KEY, JSON.stringify(data));
+  closeModals();
+  showAuth();
 }
 
 function renderSubjectList() {
   const list = $("#subjectList");
   list.innerHTML = "";
-  const subs = activeSem().subjects;
+  const subs = activeSem()?.subjects || [];
   if (!subs.length) { list.innerHTML = `<p class="muted small">Nenhuma matéria ainda.</p>`; return; }
   for (const s of subs) {
     const row = document.createElement("div");
@@ -572,12 +789,8 @@ function renderSemesterList() {
           <svg viewBox="0 0 24 24" width="17" height="17"><path fill="currentColor" d="M6 7h12v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V7Zm3-3h6l1 2h4v2H4V6h4l1-2Z"/></svg>
         </button>
       </div>`;
-    row.querySelector(".sem-activate").onclick = () => {
-      data.activeSemester = key; saveData();
-      $("#semesterSelect").value = key;
-      calRef = null; renderAll(); renderSettings();
-    };
-    row.querySelector(".sem-edit").onclick = () => editSemester(key);
+    row.querySelector(".sem-activate").onclick = () => selectSemester(key);
+    row.querySelector(".sem-edit").onclick = () => openSemesterEditor(key);
     row.querySelector(".sem-del").onclick = () => deleteSemester(key);
     list.appendChild(row);
   }
@@ -585,19 +798,37 @@ function renderSemesterList() {
 
 /* ---- Editor de matéria ---- */
 let editingSubjectId = null;
+let editingColor = PALETTE[0];
 
 function openSubjectEditor(id) {
+  const sem0 = activeSem();
+  if (!sem0) { toast("Crie um semestre primeiro."); return; }
+  if (!id && sem0.subjects.length >= 14) { toast("Limite de 14 matérias por semestre."); return; }
   editingSubjectId = id;
   const s = id ? activeSem().subjects.find(x => x.id === id) : null;
   $("#subjectModalTitle").textContent = s ? "Editar matéria" : "Nova matéria";
-  $("#subjCode").value = s?.code || "";
   $("#subjName").value = s?.name || "";
   $("#subjProf").value = s?.prof || "";
+  $("#subjEmail").value = s?.profEmail || "";
   $("#subjCredits").value = String(s?.credits || 4);
-  $("#subjColor").value = s?.color || "#ff9e2c";
+  editingColor = s?.color || PALETTE[activeSem().subjects.length % PALETTE.length];
+  renderColorPalette(editingColor);
   $("#deleteSubjectBtn").style.display = s ? "" : "none";
   renderMeetingEditor(s?.meetings || []);
   showModal("#subjectModal");
+}
+
+function renderColorPalette(selected) {
+  const wrap = $("#colorPalette");
+  wrap.innerHTML = "";
+  for (const c of PALETTE) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "swatch" + (c === selected ? " selected" : "");
+    b.style.background = c;
+    b.onclick = () => { editingColor = c; renderColorPalette(c); };
+    wrap.appendChild(b);
+  }
 }
 
 function renderMeetingEditor(meetings) {
@@ -609,35 +840,61 @@ function renderMeetingEditor(meetings) {
 function meetingRow(m) {
   const row = document.createElement("div");
   row.className = "meeting-row";
+  const isCustom = typeof m.slot === "string" && m.slot.startsWith("c:");
   const wdOpts = [1, 2, 3, 4, 5, 6].map(w =>
     `<option value="${w}" ${m.weekday === w ? "selected" : ""}>${WEEKDAYS[w]}</option>`).join("");
-  const slotOpts = SLOT_DEFS.map(sd =>
-    `<option value="${sd.id}" ${m.slot === sd.id ? "selected" : ""}>${sd.shift} · ${sd.time}</option>`).join("");
+  let slotOpts = "", curShift = "";
+  for (const sd of SLOT_DEFS) {
+    if (sd.shift !== curShift) { if (curShift) slotOpts += "</optgroup>"; slotOpts += `<optgroup label="${sd.shift}">`; curShift = sd.shift; }
+    slotOpts += `<option value="${sd.id}" ${m.slot === sd.id ? "selected" : ""}>${sd.label} (${sd.time})</option>`;
+  }
+  slotOpts += `</optgroup><option value="custom" ${isCustom ? "selected" : ""}>Personalizado…</option>`;
+  let cStart = "08:00", cEnd = "09:40";
+  if (isCustom) { const p = m.slot.slice(2).split("-"); cStart = p[0] || cStart; cEnd = p[1] || cEnd; }
   row.innerHTML = `
-    <select class="meet-wd">${wdOpts}</select>
-    <select class="meet-slot">${slotOpts}</select>
-    <button class="icon-btn del-meet" type="button" aria-label="Remover">
-      <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M6 7h12v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V7Zm3-3h6l1 2h4v2H4V6h4l1-2Z"/></svg>
-    </button>`;
+    <div class="meet-line">
+      <select class="meet-wd">${wdOpts}</select>
+      <select class="meet-slot">${slotOpts}</select>
+      <button class="icon-btn del-meet" type="button" aria-label="Remover">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M6 7h12v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V7Zm3-3h6l1 2h4v2H4V6h4l1-2Z"/></svg>
+      </button>
+    </div>
+    <div class="meet-custom" ${isCustom ? "" : "hidden"}>
+      <input type="time" class="meet-start" value="${cStart}" />
+      <span>–</span>
+      <input type="time" class="meet-end" value="${cEnd}" />
+    </div>
+    <input type="text" class="meet-room" placeholder="Sala (ex: 01-B2, LEIA 1)" value="${m.room ? esc(m.room) : ""}" />`;
+  const slotSel = row.querySelector(".meet-slot");
+  const custom = row.querySelector(".meet-custom");
+  slotSel.onchange = () => { custom.hidden = slotSel.value !== "custom"; };
   row.querySelector(".del-meet").onclick = () => row.remove();
   return row;
 }
 
 function collectMeetings() {
-  return $$("#meetingList .meeting-row").map(r => ({
-    weekday: Number($(".meet-wd", r).value),
-    slot: $(".meet-slot", r).value,
-  }));
+  return $$("#meetingList .meeting-row").map(r => {
+    let slot = $(".meet-slot", r).value;
+    if (slot === "custom") {
+      const s = $(".meet-start", r).value || "08:00";
+      const e = $(".meet-end", r).value || "09:40";
+      slot = `c:${s}-${e}`;
+      data.lastCustomTime = slot; // memoriza o último horário personalizado
+    }
+    return { weekday: Number($(".meet-wd", r).value), slot, room: $(".meet-room", r).value.trim() };
+  });
 }
 
 function saveSubject() {
+  const name = $("#subjName").value.trim();
+  if (!name) { toast("Dê um nome à matéria."); return; }
   const sem = activeSem();
   const payload = {
-    code: $("#subjCode").value.trim(),
-    name: $("#subjName").value.trim() || "(sem nome)",
+    name,
     prof: $("#subjProf").value.trim(),
+    profEmail: $("#subjEmail").value.trim(),
     credits: Number($("#subjCredits").value),
-    color: $("#subjColor").value,
+    color: editingColor,
     meetings: collectMeetings(),
   };
   if (editingSubjectId) {
@@ -646,74 +903,119 @@ function saveSubject() {
     sem.subjects.push({ id: "s_" + Date.now().toString(36), ...payload });
   }
   saveData();
-  closeModals(); renderAll(); renderSettings();
+  closeModals(); renderAll();
   toast("Matéria salva ✓");
   showBackupReminder();
 }
 
-function deleteSubject() {
+async function deleteSubject() {
   if (!editingSubjectId) return;
-  if (!confirm("Excluir esta matéria? As faltas dela serão desconsideradas.")) return;
+  const ok = await uiConfirm("Excluir esta matéria? As faltas dela serão desconsideradas.", { danger: true, yesLabel: "Excluir" });
+  if (!ok) return;
   const sem = activeSem();
   sem.subjects = sem.subjects.filter(s => s.id !== editingSubjectId);
   saveData();
-  closeModals(); renderAll(); renderSettings();
+  closeModals(); renderAll();
   showBackupReminder();
 }
 
-/* ---- Novo semestre ---- */
-function addSemester() {
-  const key = prompt("Identificador do semestre (ex: 2027.1):");
-  if (!key) return;
-  if (data.semesters[key]) { alert("Esse semestre já existe."); return; }
-  const label = prompt("Nome para exibir (ex: 5º Semestre):", key) || key;
-  const start = prompt("Data de início (AAAA-MM-DD):", "2027-02-01") || "2027-02-01";
-  const end = prompt("Data de fim (AAAA-MM-DD):", "2027-06-30") || "2027-06-30";
-  if (!isValidDate(start) || !isValidDate(end)) { alert("Datas inválidas. Use o formato AAAA-MM-DD."); return; }
-  data.semesters[key] = { label, start, end, subjects: [] };
-  data.occ[key] = {}; data.marks[key] = {}; data.notes[key] = {};
-  data.activeSemester = key;
-  saveData();
-  buildSemesterSelect();
-  calRef = null; renderAll(); renderSettings();
-  toast("Semestre criado ✓");
-  showBackupReminder();
-}
+/* ---- Editor de semestre (modal customizado) ---- */
+let editingSemesterKey = null;
+function semNumberFromLabel(label) { return parseInt(label, 10) || 1; }
 
-function editSemester(key) {
-  const sem = data.semesters[key];
-  const label = prompt("Nome do semestre:", sem.label);
-  if (label === null) return; // cancelou
-  const start = prompt("Data de início (AAAA-MM-DD):", sem.start) || sem.start;
-  const end = prompt("Data de fim (AAAA-MM-DD):", sem.end) || sem.end;
-  if (!isValidDate(start) || !isValidDate(end)) { alert("Datas inválidas. Use o formato AAAA-MM-DD."); return; }
-  sem.label = label.trim() || sem.label;
-  sem.start = start;
-  sem.end = end;
-  saveData();
-  buildSemesterSelect();
-  calRef = null; renderAll(); renderSettings();
-  toast("Semestre atualizado ✓");
-  showBackupReminder();
-}
+function openSemesterEditor(key, welcome) {
+  if (!key && Object.keys(data.semesters).length >= 18) { toast("Limite de 18 semestres."); return; }
+  editingSemesterKey = key;
+  const sem = key ? data.semesters[key] : null;
+  $("#semEditTitle").textContent = welcome
+    ? `Olá, ${cloudUsername || "bem-vindo"}! Qual seu semestre?`
+    : (sem ? "Editar semestre" : "Novo semestre");
 
-function deleteSemester(key) {
-  if (Object.keys(data.semesters).length <= 1) {
-    alert("Não é possível excluir o único semestre. Crie outro antes de excluir este.");
-    return;
+  $("#semNumber").innerHTML = Array.from({ length: 18 }, (_, i) => `<option value="${i + 1}">${i + 1}º Semestre</option>`).join("");
+  const yNow = new Date().getFullYear();
+  const ySel = $("#semYear"); ySel.innerHTML = "";
+  for (let y = yNow - 2; y <= yNow + 5; y++) ySel.innerHTML += `<option value="${y}">${y}</option>`;
+
+  if (sem) {
+    $("#semNumber").value = String(semNumberFromLabel(sem.label));
+    $("#semPeriod").value = (sem.start && Number(sem.start.slice(5, 7)) <= 7) ? "fev" : "ago";
+    ySel.value = sem.start ? sem.start.slice(0, 4) : String(yNow);
+    $("#semDeleteBtn").hidden = false;
+  } else {
+    const nums = Object.values(data.semesters).map(s => semNumberFromLabel(s.label));
+    $("#semNumber").value = String(nums.length ? Math.min(18, Math.max(...nums) + 1) : 1);
+    $("#semPeriod").value = "fev";
+    ySel.value = String(yNow);
+    $("#semDeleteBtn").hidden = true;
   }
-  const sem = data.semesters[key];
-  if (!confirm(`Excluir o semestre "${sem.label}" e TODAS as faltas dele? Esta ação não pode ser desfeita.`)) return;
-  delete data.semesters[key];
-  delete data.occ[key];
-  delete data.marks[key];
-  delete data.notes[key];
-  if (data.activeSemester === key) data.activeSemester = Object.keys(data.semesters)[0];
+  showModal("#semEditModal");
+}
+
+function periodDates(period, year) {
+  return period === "ago"
+    ? { start: `${year}-08-01`, end: `${year}-12-20` }
+    : { start: `${year}-02-01`, end: `${year}-06-30` };
+}
+
+function saveSemesterFromModal() {
+  const num = Number($("#semNumber").value);
+  const period = $("#semPeriod").value;
+  const year = Number($("#semYear").value);
+  const { start, end } = periodDates(period, year);
+  const label = `${num}º Semestre (${period === "ago" ? "Ago - Dez" : "Fev - Jun"} ${year})`;
+  if (editingSemesterKey) {
+    Object.assign(data.semesters[editingSemesterKey], { label, start, end });
+  } else {
+    let key = `${year}.${period === "fev" ? 1 : 2}`;
+    while (data.semesters[key]) key += "x";
+    data.semesters[key] = { label, start, end, subjects: [] };
+    data.occ[key] = {}; data.marks[key] = {}; data.notes[key] = {};
+    data.activeSemester = key;
+  }
   saveData();
-  buildSemesterSelect();
-  calRef = null; renderAll(); renderSettings();
+  updateSemesterButton();
+  calRef = null;
+  closeModals();
+  renderAll();
+  toast(editingSemesterKey ? "Semestre atualizado ✓" : "Semestre criado ✓");
+  showBackupReminder();
+}
+
+async function deleteSemester(key) {
+  const ok = await uiConfirm(`Excluir "${data.semesters[key].label}" e todas as faltas dele? Não pode ser desfeito.`, { danger: true, yesLabel: "Excluir" });
+  if (!ok) return;
+  delete data.semesters[key];
+  delete data.occ[key]; delete data.marks[key]; delete data.notes[key];
+  if (data.activeSemester === key) data.activeSemester = Object.keys(data.semesters)[0] || null;
+  saveData();
+  updateSemesterButton();
+  calRef = null; renderAll();
   toast("Semestre excluído");
   showBackupReminder();
+}
+
+/* ---- Diálogos personalizados (substituem alert/confirm/prompt do SO) ---- */
+let _confirmCb = null, _confirmIsPrompt = false;
+function _openConfirm({ title = "Confirmar", message, yesLabel = "Confirmar", danger = false, prompt = false, placeholder = "" }) {
+  return new Promise(resolve => {
+    _confirmCb = resolve; _confirmIsPrompt = prompt;
+    $("#confirmTitle").textContent = title;
+    $("#confirmMsg").textContent = message;
+    const inp = $("#confirmInput");
+    inp.hidden = !prompt; inp.value = ""; inp.placeholder = placeholder;
+    const yes = $("#confirmYes");
+    yes.textContent = yesLabel;
+    yes.classList.toggle("btn-danger-fill", danger);
+    showModal("#confirmModal");
+    if (prompt) setTimeout(() => inp.focus(), 60);
+  });
+}
+function uiConfirm(message, opts = {}) { return _openConfirm({ message, ...opts }); }
+function uiPrompt(message, opts = {}) { return _openConfirm({ message, prompt: true, ...opts }); }
+function resolveConfirm(val) {
+  $("#confirmModal").hidden = true;
+  const cb = _confirmCb; _confirmCb = null;
+  if (cb) cb(val);
 }
 
 /* ---- Backup ---- */
@@ -728,76 +1030,38 @@ function exportData() {
 }
 function importData(file) {
   const reader = new FileReader();
-  reader.onload = () => {
+  reader.onload = async () => {
     try {
       const imported = JSON.parse(reader.result);
       if (!imported.semesters) throw new Error("arquivo inválido");
-      if (!confirm("Importar substituirá TODOS os dados atuais. Continuar?")) return;
+      const ok = await uiConfirm("Importar vai substituir TODOS os dados atuais. Continuar?", { danger: true, yesLabel: "Importar" });
+      if (!ok) return;
       data = migrate(imported);
       saveData();
-      buildSemesterSelect();
+      updateSemesterButton();
       calRef = null; closeModals(); renderAll();
       toast("Dados importados ✓");
-    } catch (e) { alert("Arquivo inválido: " + e.message); }
+    } catch (e) { toast("Arquivo inválido."); }
   };
   reader.readAsText(file);
 }
 
-function wipeAllData() {
-  const ans = prompt("Isto vai APAGAR TODOS os dados e restaurar o padrão (não pode ser desfeito).\n\nDigite APAGAR para confirmar:");
-  if (ans === null) return;
-  if (ans.trim().toUpperCase() !== "APAGAR") { alert("Confirmação incorreta. Nada foi apagado."); return; }
-  localStorage.removeItem(STORE_KEY);
-  data = seedData();
+async function wipeAllData() {
+  const ok = await uiConfirm("Apagar TODOS os dados (matérias, faltas, semestres)? Não pode ser desfeito.", { danger: true, yesLabel: "Apagar tudo" });
+  if (!ok) return;
+  data = emptyData();
   saveData();
-  buildSemesterSelect();
+  updateSemesterButton();
   calRef = null;
+  closeModals();
   renderAll();
   renderSettings();
-  toast("Dados apagados. Padrão restaurado.");
-}
-
-/* Pixel art (X = pixel aceso, espaço = vazio) */
-const PIX_VIWCTOR = [   // Saturno: planeta + anel (10 linhas, mesma altura do robô)
-  "     XXX     ",
-  "    XXXXX    ",
-  "   XXXXXXX   ",
-  "   XXXXXXX   ",
-  "XX XXXXXXX XX",
-  "XX XXXXXXX XX",
-  "   XXXXXXX   ",
-  "   XXXXXXX   ",
-  "    XXXXX    ",
-  "     XXX     ",
-];
-const PIX_CLAUDE = [    // robô estilo Claude Code
-  " XXXXXXXXXXXX ",
-  " XXXXXXXXXXXX ",
-  " XXX XXXX XXX ",
-  " XXX XXXX XXX ",
-  "XXXXXXXXXXXXXX",
-  "XXXXXXXXXXXXXX",
-  " XXXXXXXXXXXX ",
-  " XXXXXXXXXXXX ",
-  "  X X    X X  ",
-  "  X X    X X  ",
-];
-
-function renderPixel(el, rows) {
-  if (!el) return;
-  el.style.gridTemplateColumns = `repeat(${rows[0].length}, 6px)`;
-  el.innerHTML = "";
-  for (const row of rows) for (const ch of row) {
-    const s = document.createElement("span");
-    if (ch !== " ") s.className = "on";
-    el.appendChild(s);
-  }
+  toast("Dados apagados.");
+  if (cloudUserId) openSemesterEditor(null, true);
 }
 
 function openAbout() {
   $("#aboutVersion").textContent = "v" + APP_VERSION;
-  renderPixel($("#pixViwctor"), PIX_VIWCTOR);
-  renderPixel($("#pixClaude"), PIX_CLAUDE);
   showModal("#aboutModal");
 }
 
@@ -817,42 +1081,83 @@ function hideBackupReminder() {
    MODAIS / NAV
    ============================================================ */
 function showModal(sel) { $(sel).hidden = false; }
-function closeModals() { $$(".modal-overlay").forEach(m => (m.hidden = true)); }
+function closeModals() {
+  $$(".modal-overlay").forEach(m => (m.hidden = true));
+  if (_confirmCb) { const cb = _confirmCb; _confirmCb = null; cb(_confirmIsPrompt ? null : false); }
+}
 
-function buildSemesterSelect() {
-  const sel = $("#semesterSelect");
-  sel.innerHTML = "";
+function shortSemLabel(label) { return (label || "").split(" (")[0] || label; }
+
+function updateSemesterButton() {
+  const el = $("#semesterBtnLabel");
+  if (!el) return;
+  const sem = activeSem();
+  el.textContent = sem ? shortSemLabel(sem.label) : "Sem semestre";
+}
+
+function openSemesterPicker() {
+  const list = $("#semesterPickerList");
+  list.innerHTML = "";
   for (const [key, sem] of Object.entries(data.semesters)) {
-    const o = document.createElement("option");
-    o.value = key; o.textContent = sem.label;
-    sel.appendChild(o);
+    const detail = sem.label.includes("(")
+      ? sem.label.slice(sem.label.indexOf("(") + 1).replace(")", "").trim() : "";
+    const b = document.createElement("button");
+    b.className = "picker-item" + (key === data.activeSemester ? " active" : "");
+    b.innerHTML = `<span class="pi-name">${esc(shortSemLabel(sem.label))}</span>` +
+                  (detail ? `<span class="pi-detail">${esc(detail)}</span>` : "");
+    b.onclick = () => { selectSemester(key); closeModals(); };
+    list.appendChild(b);
   }
-  sel.value = data.activeSemester;
+  const create = document.createElement("button");
+  create.className = "btn btn-sm btn-ghost";
+  create.style.marginTop = "4px";
+  create.textContent = "+ Novo semestre";
+  create.onclick = () => { closeModals(); openSemesterEditor(null); };
+  list.appendChild(create);
+  showModal("#semesterModal");
+}
+
+function selectSemester(key) {
+  data.activeSemester = key;
+  autoSwitched = false;
+  saveData();
+  calRef = null;
+  updateSemesterButton();
+  renderAll();
 }
 
 function switchView(view) {
+  // retorno de segurança: ao sair do calendário (que pode ter trocado de semestre
+  // sozinho ao navegar), volta para o semestre de hoje, evitando confusão
+  if (view !== "calendar" && autoSwitched) {
+    autoSwitched = false;
+    data.activeSemester = currentSemesterKey();
+    updateSemesterButton();
+    calRef = null;
+  }
+  activeView = view;
   $$(".view").forEach(v => v.classList.remove("active"));
   $(`#view-${view}`).classList.add("active");
   $$(".nav-btn").forEach(b => b.classList.toggle("active", b.dataset.view === view));
+  if (view === "dashboard") renderDashboard();
+  if (view === "subjects") renderSubjectsTab();
   if (view === "calendar") renderCalendar();
   if (view === "settings") renderSettings();
-  $("#fab").hidden = (view === "settings"); // FAB só faz sentido em Painel/Calendário
+  $("#fab").hidden = (view === "settings" || view === "subjects"); // FAB só no Painel/Calendário
   if (location.hash.slice(1) !== view) history.replaceState(null, "", "#" + view);
 }
 
-function renderAll() { renderDashboard(); renderCalendar(); }
+function renderAll() { renderDashboard(); renderCalendar(); renderSubjectsTab(); }
 
 /* ============================================================
    EVENTOS
    ============================================================ */
 function bindEvents() {
-  $("#semesterSelect").onchange = e => {
-    data.activeSemester = e.target.value; saveData();
-    calRef = null; renderAll();
-  };
+  $("#semesterBtn").onclick = openSemesterPicker;
   $$(".nav-btn").forEach(b => b.onclick = () => switchView(b.dataset.view));
   $("#calPrev").onclick = () => calShift(-1);
   $("#calNext").onclick = () => calShift(1);
+  $("#calToday").onclick = goToday;
 
   // deslizar para trocar de mês no calendário
   let _sx = null, _sy = null;
@@ -889,43 +1194,235 @@ function bindEvents() {
     };
   });
 
+  $("#subjectsByDay").addEventListener("click", e => {
+    const el = e.target.closest(".mc-email");
+    if (el) copyText(el.dataset.email);
+  });
+
   $("#addSubjectBtn").onclick = () => openSubjectEditor(null);
   $("#subjectSaveBtn").onclick = saveSubject;
   $("#deleteSubjectBtn").onclick = deleteSubject;
-  $("#addMeetingBtn").onclick = () => $("#meetingList").appendChild(meetingRow({ weekday: 1, slot: "n1" }));
-  $("#addSemesterBtn").onclick = addSemester;
+  $("#addMeetingBtn").onclick = () => $("#meetingList").appendChild(meetingRow({ weekday: 1, slot: data.lastCustomTime || "n1", room: "" }));
+  $("#addSemesterBtn").onclick = () => openSemesterEditor(null);
+  $("#semSaveBtn").onclick = saveSemesterFromModal;
+  $("#semDeleteBtn").onclick = () => { const k = editingSemesterKey; closeModals(); deleteSemester(k); };
+
+  $("#confirmYes").onclick = () => resolveConfirm(_confirmIsPrompt ? $("#confirmInput").value : true);
+  $("#confirmNo").onclick = () => resolveConfirm(_confirmIsPrompt ? null : false);
+  $("#confirmInput").addEventListener("keydown", e => { if (e.key === "Enter") $("#confirmYes").click(); });
 
   $("#exportBtn").onclick = exportData;
   $("#importBtn").onclick = () => $("#importFile").click();
   $("#importFile").onchange = e => e.target.files[0] && importData(e.target.files[0]);
   $("#wipeBtn").onclick = wipeAllData;
   $("#aboutBtn").onclick = openAbout;
+  $("#accountCard").onclick = openAccountModal;
+  $("#deleteAccountBtn").onclick = deleteAccount;
+  $("#creditViwctor").onclick = () => window.open("https://github.com/viwctor/m87", "_blank", "noopener");
 
   $("#brBackup").onclick = () => { hideBackupReminder(); exportData(); };
   $("#brDismiss").onclick = hideBackupReminder;
 
+  // deslizar em área vazia troca de guia (mobile)
+  const order = ["subjects", "dashboard", "calendar", "settings"];
+  let _mx = null, _my = null, _mt = null;
+  const main = $(".app-main");
+  main.addEventListener("touchstart", e => {
+    _mx = e.changedTouches[0].clientX; _my = e.changedTouches[0].clientY; _mt = e.target;
+  }, { passive: true });
+  main.addEventListener("touchend", e => {
+    if (_mx === null) return;
+    const dx = e.changedTouches[0].clientX - _mx, dy = e.changedTouches[0].clientY - _my;
+    const startedInGrid = _mt && _mt.closest && _mt.closest("#calGrid");
+    _mx = _my = _mt = null;
+    if (startedInGrid) return; // o grid do calendário tem o próprio swipe (troca mês)
+    if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.6) {
+      const cur = order.indexOf(activeView);
+      const next = Math.max(0, Math.min(order.length - 1, cur + (dx < 0 ? 1 : -1)));
+      if (next !== cur) switchView(order[next]);
+    }
+  }, { passive: true });
+
   $$("[data-close-modal]").forEach(b => b.onclick = closeModals);
   $$(".modal-overlay").forEach(ov => ov.addEventListener("click", e => { if (e.target === ov) closeModals(); }));
+
+  // atalhos de teclado (desktop)
+  document.addEventListener("keydown", e => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.target.matches("input, select, textarea")) return;
+    const modalOpen = $$(".modal-overlay").some(m => !m.hidden);
+    if (e.key === "Escape" && modalOpen) { closeModals(); return; }
+    if (modalOpen || !$("#auth").hidden) return;
+    const views = { "1": "subjects", "2": "dashboard", "3": "calendar", "4": "settings" };
+    if (views[e.key]) { switchView(views[e.key]); return; }
+    if (activeView === "calendar") {
+      if (e.key === "ArrowLeft") calShift(-1);
+      else if (e.key === "ArrowRight") calShift(1);
+      else if (e.key.toLowerCase() === "h") goToday();
+    }
+    if (e.key.toLowerCase() === "n" && !$("#fab").hidden) $("#fab").click();
+  });
+}
+
+/* ============================================================
+   AUTENTICAÇÃO / NUVEM (Supabase) — opcional
+   ============================================================ */
+let authMode = "login";
+function authMsg(t) { $("#authMsg").textContent = t || ""; }
+
+function showAuth() {
+  $("#auth").hidden = false;
+  setAuthMode("login");
+}
+function setAuthMode(mode) {
+  authMode = mode;
+  $("#authUsername").hidden = mode !== "signup";
+  $("#authPrimary").textContent = mode === "login" ? "Entrar" : "Criar conta";
+  $("#authSecondary").textContent = mode === "login" ? "Criar conta" : "Já tenho conta";
+  authMsg("");
+}
+
+async function doAuthPrimary() {
+  const email = $("#authEmail").value.trim();
+  const pw = $("#authPassword").value;
+  if (!email || !pw) { authMsg("Preencha e-mail e senha."); return; }
+  if (authMode === "signup" && pw.length < 6) { authMsg("A senha precisa ter ao menos 6 caracteres."); return; }
+  authMsg("Aguarde…");
+  try {
+    if (authMode === "login") {
+      const res = await M87Cloud.signIn(email, pw);
+      await enterApp(res.user);
+    } else {
+      const username = $("#authUsername").value.trim();
+      if (!username) { authMsg("Escolha um nome de usuário."); return; }
+      if (!/@usp\.br$/i.test(email)) { authMsg("Use seu e-mail institucional da USP (@usp.br)."); return; }
+      const res = await M87Cloud.signUp(email, pw, username);
+      if (res.session && res.user) await enterApp(res.user);
+      else { setAuthMode("login"); authMsg("Conta criada! Confirme pelo link enviado ao seu e-mail e depois entre."); }
+    }
+  } catch (e) {
+    authMsg("Erro: " + (e.message || e));
+  }
+}
+async function doForgot() {
+  const email = $("#authEmail").value.trim();
+  if (!email) { authMsg("Digite seu e-mail para recuperar a senha."); return; }
+  try { await M87Cloud.resetPassword(email); authMsg("Enviamos um link de recuperação para o seu e-mail."); }
+  catch (e) { authMsg("Erro: " + (e.message || e)); }
+}
+async function doLogout() {
+  const ok = await uiConfirm("Sair da conta? Seus dados continuam salvos na nuvem.", { yesLabel: "Sair" });
+  if (!ok) return;
+  try { await M87Cloud.signOut(); } catch (e) { console.error(e); }
+  cloudUserId = null;
+  data = seedData();                                  // limpa o cache local (evita vazar dados ao próximo login)
+  localStorage.setItem(STORE_KEY, JSON.stringify(data));
+  closeModals();
+  showAuth();
+}
+async function handlePasswordRecovery() {
+  $("#auth").hidden = false;
+  const np = await uiPrompt("Defina a nova senha (mínimo 6 caracteres):", { yesLabel: "Salvar", placeholder: "Nova senha" });
+  if (!np) return;
+  if (np.length < 6) { toast("Senha muito curta."); return; }
+  try { await M87Cloud.updatePassword(np); toast("Senha atualizada! Entre com a nova senha."); }
+  catch (e) { toast("Erro: " + (e.message || e)); }
+}
+
+async function enterApp(user) {
+  cloudUserId = user.id;
+  cloudUsername = (user.user_metadata && user.user_metadata.username) ||
+                  (user.email ? user.email.split("@")[0] : "Usuário");
+  cloudEmail = user.email || "";
+  try {
+    const remote = await M87Cloud.loadData(user.id);
+    if (remote && remote.semesters && Object.keys(remote.semesters).length) {
+      data = migrate(remote);
+      localStorage.setItem(STORE_KEY, JSON.stringify(data));
+    } else {
+      data = emptyData();                              // novo usuário começa vazio
+      localStorage.setItem(STORE_KEY, JSON.stringify(data));
+      await M87Cloud.saveData(user.id, data);
+    }
+  } catch (e) {
+    console.error("Falha ao carregar dados da nuvem:", e); // segue com o cache local
+  }
+  _dataVer++;
+  updateSemesterButton();
+  calRef = null;
+  renderAll();
+  renderAccount();
+  applyHashView();
+  $("#auth").hidden = true;
+  hideSplash();
+  if (!activeSem()) openSemesterEditor(null, true);    // boas-vindas: escolher o semestre
+  try { M87Cloud.subscribe(user.id, handleRealtime); } catch (e) { console.error(e); }
+}
+
+/* mudança vinda de outro aparelho (tempo real) */
+function handleRealtime(row) {
+  if (!row || !row.data || row.data._device === DEVICE_ID) return; // ignora o próprio eco
+  try {
+    data = migrate(row.data);
+    if (!data.semesters[data.activeSemester]) data.activeSemester = Object.keys(data.semesters)[0] || null;
+    localStorage.setItem(STORE_KEY, JSON.stringify(data));
+    _dataVer++;
+    updateSemesterButton();
+    calRef = null;
+    renderAll();
+    renderAccount();
+    toast("Atualizado de outro aparelho ⟳");
+  } catch (e) { console.error("realtime", e); }
+}
+
+function bindAuthEvents() {
+  if (!$("#authPrimary")) return;
+  $("#authPrimary").onclick = doAuthPrimary;
+  $("#authSecondary").onclick = () => setAuthMode(authMode === "login" ? "signup" : "login");
+  $("#authForgot").onclick = doForgot;
+  $("#logoutBtn").onclick = doLogout;
+  $("#authPassword").addEventListener("keydown", e => { if (e.key === "Enter") doAuthPrimary(); });
 }
 
 /* ============================================================
    INIT
    ============================================================ */
-function init() {
-  buildSemesterSelect();
-  bindEvents();
-  renderAll();
+function applyHashView() {
   const hv = location.hash.slice(1);
-  if (hv === "calendar" || hv === "settings") switchView(hv);
-
-  // animação de abertura
-  setTimeout(() => {
-    const sp = $("#splash");
-    if (sp) { sp.classList.add("hide"); setTimeout(() => sp.remove(), 450); }
-  }, 1100);
-
+  if (["subjects", "calendar", "settings"].includes(hv)) switchView(hv);
+}
+function hideSplash() {
+  const sp = $("#splash");
+  if (sp) { sp.classList.add("hide"); setTimeout(() => sp.remove(), 450); }
+}
+function registerSW() {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(() => {}));
+  }
+}
+
+async function cloudInit() {
+  M87Cloud.onAuthChange((event) => {
+    if (event === "PASSWORD_RECOVERY") handlePasswordRecovery();
+    else if (event === "SIGNED_OUT") showAuth();
+  });
+  let session = null;
+  try { session = await M87Cloud.getSession(); } catch (e) { console.error(e); }
+  if (session && session.user) await enterApp(session.user);
+  else setTimeout(() => { hideSplash(); showAuth(); }, 1100);
+}
+
+function init() {
+  bindEvents();
+  bindAuthEvents();
+  registerSW();
+  if (window.M87Cloud && M87Cloud.enabled()) {
+    cloudInit();                       // tem login: tela de conta + dados na nuvem
+  } else {
+    updateSemesterButton();             // modo local (sem login)
+    renderAll();
+    applyHashView();
+    setTimeout(hideSplash, 1100);
   }
 }
 init();

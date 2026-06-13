@@ -26,6 +26,24 @@
     </div>
   </div>
 
+  <!-- ===================== TELA DE LOGIN ===================== -->
+  <div id="auth" class="auth-screen" hidden>
+    <div class="auth-inner">
+      <div class="auth-logo"><img src="./icons/icon-192.png" alt="" /></div>
+      <h1 class="auth-title">M87</h1>
+      <p class="auth-sub">seu controle de faltas personalizado</p>
+      <div class="auth-form">
+        <input type="text" id="authUsername" placeholder="Nome de usuário" autocomplete="username" hidden />
+        <input type="email" id="authEmail" placeholder="E-mail" autocomplete="email" />
+        <input type="password" id="authPassword" placeholder="Senha" autocomplete="current-password" />
+        <div id="authMsg" class="auth-msg"></div>
+        <button class="btn btn-primary" id="authPrimary">Entrar</button>
+        <button class="btn btn-ghost" id="authSecondary">Criar conta</button>
+        <button class="auth-link" id="authForgot">Esqueci a senha</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ===================== TOPO ===================== -->
   <header class="app-header">
     <div class="brand">
@@ -33,12 +51,33 @@
       <h1 class="brand-title">M87</h1>
     </div>
     <div class="header-actions">
-      <select id="semesterSelect" class="semester-select" aria-label="Semestre"></select>
+      <button id="semesterBtn" class="semester-btn" aria-label="Trocar semestre">
+        <span id="semesterBtnLabel"></span>
+        <svg viewBox="0 0 24 24" width="16" height="16"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
     </div>
   </header>
 
   <!-- ===================== VIEWS ===================== -->
   <main class="app-main">
+    <!-- Matérias -->
+    <section id="view-subjects" class="view">
+      <div class="semester-banner" id="subjectsBanner"></div>
+      <div id="subjectsByDay"></div>
+      <div class="manage-section">
+        <div class="manage-head">
+          <h4>Editar matérias</h4>
+          <button class="btn btn-sm btn-primary" id="addSubjectBtn">+ Matéria</button>
+        </div>
+        <div id="subjectList" class="subject-list"></div>
+      </div>
+      <div class="manage-section">
+        <h4>Semestres</h4>
+        <div id="semesterList" class="semester-list"></div>
+        <button class="btn btn-sm btn-ghost" id="addSemesterBtn">+ Novo semestre</button>
+      </div>
+    </section>
+
     <!-- Dashboard -->
     <section id="view-dashboard" class="view active">
       <div class="semester-banner" id="semesterBanner"></div>
@@ -53,6 +92,7 @@
           <svg viewBox="0 0 24 24" width="20" height="20"><path d="M15 6l-6 6 6 6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
         <h2 id="calTitle" class="cal-title"></h2>
+        <button id="calToday" class="btn btn-sm btn-ghost cal-today">Hoje</button>
         <button id="calNext" class="icon-btn" aria-label="Próximo mês">
           <svg viewBox="0 0 24 24" width="20" height="20"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
@@ -71,29 +111,23 @@
 
     <!-- Configurações -->
     <section id="view-settings" class="view">
+      <button class="account-card" id="accountCard" hidden>
+        <span class="account-avatar" id="accountAvatar">M</span>
+        <span class="account-info">
+          <span class="account-name" id="accountName">Conta</span>
+          <span class="account-sub muted small">Toque para gerenciar a conta</span>
+        </span>
+        <svg viewBox="0 0 24 24" width="20" height="20" class="account-caret"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+
       <div class="manage-section">
         <h4>Backup</h4>
-        <p class="muted small">Os dados ficam salvos só neste aparelho. Exporte para guardar ou enviar a um amigo.</p>
+        <p class="muted small">Salve seus dados em um arquivo ou restaure a partir de um backup.</p>
         <div class="row-btns">
           <button class="btn btn-sm btn-primary" id="exportBtn">Exportar</button>
           <button class="btn btn-sm btn-ghost" id="importBtn">Importar</button>
           <input type="file" id="importFile" accept="application/json" hidden />
         </div>
-        <button class="btn btn-sm btn-ghost btn-danger wipe-btn" id="wipeBtn">Apagar todos os dados</button>
-      </div>
-
-      <div class="manage-section">
-        <div class="manage-head">
-          <h4>Matérias <span class="muted small" id="settingsSemLabel"></span></h4>
-          <button class="btn btn-sm btn-primary" id="addSubjectBtn">+ Matéria</button>
-        </div>
-        <div id="subjectList" class="subject-list"></div>
-      </div>
-
-      <div class="manage-section">
-        <h4>Semestres</h4>
-        <div id="semesterList" class="semester-list"></div>
-        <button class="btn btn-sm btn-ghost" id="addSemesterBtn">+ Novo semestre</button>
       </div>
 
       <div class="manage-section">
@@ -103,11 +137,16 @@
     </section>
   </main>
 
-  <!-- ===================== NAV INFERIOR ===================== -->
+  <!-- ===================== NAV (inferior no mobile, lateral no desktop) ===================== -->
   <nav class="bottom-nav">
+    <div class="nav-logo"><img src="./icons/icon-192.png" alt="M87" /><span>M87</span></div>
+    <button class="nav-btn" data-view="subjects">
+      <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M5 4h11a2 2 0 0 1 2 2v14l-3-2-3 2-3-2-3 2V6a2 2 0 0 1 2-2Zm2 4v2h7V8H7Zm0 4v2h7v-2H7Z"/></svg>
+      <span>Matérias</span>
+    </button>
     <button class="nav-btn active" data-view="dashboard">
-      <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M4 13h6V4H4v9Zm0 7h6v-5H4v5Zm10 0h6V11h-6v9Zm0-16v5h6V4h-6Z"/></svg>
-      <span>Painel</span>
+      <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm0 2a8 8 0 1 1 0 16 8 8 0 0 1 0-16Zm-1.2 11.4-3.2-3.2 1.4-1.4 1.8 1.8 4.2-4.2 1.4 1.4-5.6 5.6Z"/></svg>
+      <span>Faltas</span>
     </button>
     <button class="nav-btn" data-view="calendar">
       <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M7 2v2H5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2V2h-2v2H9V2H7Zm12 7v10H5V9h14Z"/></svg>
@@ -169,22 +208,24 @@
         </button>
       </div>
 
-      <label class="field"><span>Código</span><input type="text" id="subjCode" placeholder="RAD1604" /></label>
-      <label class="field"><span>Nome</span><input type="text" id="subjName" placeholder="Desenvolvimento de Sistemas..." /></label>
-      <label class="field"><span>Professor(a)</span><input type="text" id="subjProf" placeholder="Nome do docente" /></label>
+      <label class="field"><span>Nome da matéria *</span><input type="text" id="subjName" placeholder="ex: Matemática Financeira" /></label>
+      <label class="field"><span>Professor(a) <span class="muted">(opcional)</span></span><input type="text" id="subjProf" placeholder="Nome do docente" /></label>
+      <label class="field"><span>E-mail USP do professor <span class="muted">(opcional)</span></span><input type="email" id="subjEmail" placeholder="docente@usp.br" /></label>
 
-      <div class="field-row">
-        <label class="field"><span>Créditos</span>
-          <select id="subjCredits">
-            <option value="2">2 créditos (máx. 4 faltas)</option>
-            <option value="4">4 créditos (máx. 8 faltas)</option>
-          </select>
-        </label>
-        <label class="field"><span>Cor</span><input type="color" id="subjColor" value="#ff9e2c" /></label>
+      <label class="field"><span>Créditos</span>
+        <select id="subjCredits">
+          <option value="2">2 créditos (máx. 4 faltas)</option>
+          <option value="4">4 créditos (máx. 8 faltas)</option>
+        </select>
+      </label>
+
+      <div class="field">
+        <span>Cor</span>
+        <div id="colorPalette" class="color-palette"></div>
       </div>
 
       <div class="field">
-        <span>Horários (dia + aula)</span>
+        <span>Horários <span class="muted">(opcional — dia + aula)</span></span>
         <div id="meetingList" class="meeting-list"></div>
         <button class="btn btn-sm btn-ghost" id="addMeetingBtn" type="button">+ Adicionar horário</button>
       </div>
@@ -211,27 +252,102 @@
       <div class="terminal">
 <pre class="t-head">Projeto M87
 <span id="aboutVersion"></span></pre>
-<pre class="t-log">Melhorias desta versão:
-  - Resumo do semestre e aulas restantes
-  - Anotações por dia no registro
-  - Calendário: deslizar para trocar de mês
-  - Animação de abertura
-  - Aba de configurações com backup e "apagar tudo"
-  - Cantos arredondados no ícone
+<pre class="t-log">Novidades desta versão:
+   Login com e-mail USP e dados na nuvem
+   Nova guia Matérias (info por dia, sala, professor)
+   Criação guiada de semestres (até 18)
+   Horários: manhã, tarde, noite, integral e personalizado
+   Seletor de semestre dentro do app
+   Resumo com total de créditos
+   Diálogos personalizados (sem caixas do sistema)
+   Calendário troca de semestre ao deslizar + botão Hoje
+   Deslizar troca de guia
 </pre>
-        <div class="credits">
-          <div class="t-label">Desenvolvido por:</div>
-          <div class="credit-row">
-            <div class="credit cred-viw">
-              <div class="pixel-art" id="pixViwctor"></div>
-              <span>viwctor</span>
-            </div>
-            <div class="credit cred-claude">
-              <div class="pixel-art" id="pixClaude"></div>
-              <span>Claude</span>
-            </div>
-          </div>
+        <p class="made-by">Desenvolvido com <span class="cc-orange">Claude Code</span> por <a id="creditViwctor" class="dev-link">viwctor</a></p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== MODAL: SELECIONAR SEMESTRE ===================== -->
+  <div id="semesterModal" class="modal-overlay" hidden>
+    <div class="modal">
+      <div class="modal-head">
+        <h3>Semestre</h3>
+        <button class="icon-btn" data-close-modal aria-label="Fechar">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="m12 10.6 5-5 1.4 1.4-5 5 5 5L17 18.4l-5-5-5 5L5.6 17l5-5-5-5L7 5.6l5 5Z"/></svg>
+        </button>
+      </div>
+      <div id="semesterPickerList" class="picker-list"></div>
+    </div>
+  </div>
+
+  <!-- ===================== MODAL: NOVO/EDITAR SEMESTRE ===================== -->
+  <div id="semEditModal" class="modal-overlay" hidden>
+    <div class="modal">
+      <div class="modal-head">
+        <h3 id="semEditTitle">Novo semestre</h3>
+        <button class="icon-btn" data-close-modal aria-label="Fechar">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="m12 10.6 5-5 1.4 1.4-5 5 5 5L17 18.4l-5-5-5 5L5.6 17l5-5-5-5L7 5.6l5 5Z"/></svg>
+        </button>
+      </div>
+      <label class="field"><span>Semestre</span><select id="semNumber"></select></label>
+      <div class="field-row">
+        <label class="field"><span>Período</span>
+          <select id="semPeriod">
+            <option value="fev">Fevereiro – Junho</option>
+            <option value="ago">Agosto – Dezembro</option>
+          </select>
+        </label>
+        <label class="field"><span>Ano</span><select id="semYear"></select></label>
+      </div>
+      <div class="modal-foot space-between">
+        <button class="btn btn-ghost btn-danger" id="semDeleteBtn" hidden>Excluir</button>
+        <div class="row-btns">
+          <button class="btn btn-ghost" data-close-modal>Cancelar</button>
+          <button class="btn btn-primary" id="semSaveBtn">Salvar</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== MODAL: CONFIRMAÇÃO ===================== -->
+  <div id="confirmModal" class="modal-overlay" hidden>
+    <div class="modal modal-confirm">
+      <h3 id="confirmTitle">Confirmar</h3>
+      <p id="confirmMsg"></p>
+      <input type="text" id="confirmInput" autocomplete="off" hidden />
+      <div class="modal-foot">
+        <button class="btn btn-ghost" id="confirmNo">Cancelar</button>
+        <button class="btn btn-primary" id="confirmYes">Confirmar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== MODAL: CONTA ===================== -->
+  <div id="accountModal" class="modal-overlay" hidden>
+    <div class="modal">
+      <div class="modal-head">
+        <h3>Conta</h3>
+        <button class="icon-btn" data-close-modal aria-label="Fechar">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="m12 10.6 5-5 1.4 1.4-5 5 5 5L17 18.4l-5-5-5 5L5.6 17l5-5-5-5L7 5.6l5 5Z"/></svg>
+        </button>
+      </div>
+      <div class="account-head">
+        <span class="account-avatar lg" id="accountAvatarLg">M</span>
+        <div class="account-info">
+          <span class="account-name" id="accountNameLg"></span>
+          <span class="muted small" id="accountEmail"></span>
+        </div>
+      </div>
+
+      <div class="manage-section">
+        <button class="btn btn-ghost" id="logoutBtn" style="width:100%">Sair da conta</button>
+      </div>
+
+      <div class="manage-section" style="border:none; margin-bottom:0; padding-bottom:0">
+        <h4 style="color:var(--danger)">Zona de perigo</h4>
+        <button class="btn btn-ghost btn-danger wipe-btn" id="wipeBtn">Apagar todos os dados</button>
+        <button class="btn btn-ghost btn-danger wipe-btn" id="deleteAccountBtn">Excluir conta</button>
       </div>
     </div>
   </div>
@@ -247,6 +363,8 @@
 
   <div id="toast" class="toast" hidden></div>
 
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="./supabase.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>
